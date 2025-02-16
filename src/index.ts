@@ -180,6 +180,58 @@ export const liveMapTool: ToolConfig = {
             const stragglers = flagSquadStragglers(coordinates, thresholdFeet);
             const centroid = calculateSquadCentroid(coordinates);
             
+            // If stragglers are detected, request human intervention
+            if (stragglers.length > 0) {
+              const stragglersInfo = stragglers.map(sid => {
+                const soldier = coordinates.find(c => c.soldierId === sid);
+                if (soldier) {
+                  const distance = haversineDistance(
+                    soldier.lat, 
+                    soldier.lon, 
+                    centroid[0], 
+                    centroid[1]
+                  );
+                  return `Soldier ${sid} (${distance.toFixed(2)} ft from center)`;
+                }
+                return `Soldier ${sid}`;
+              }).join('\n');
+
+              const stepId = await app.processes!.requestHumanAction(processId, {
+                message: "Stragglers detected! Manual intervention required.",
+                ui: new CardUIBuilder()
+                  .title("⚠️ Straggler Alert")
+                  .content(`The following soldiers have strayed beyond ${thresholdFeet} feet from their squad center:\n\n${stragglersInfo}\n\nPlease review and take appropriate action.`)
+                  .build(),
+                actions: [
+                  {
+                    id: "acknowledge",
+                    title: "Acknowledge",
+                    requiresResponse: false
+                  },
+                  {
+                    id: "contact",
+                    title: "Contact Squad Leader",
+                    requiresResponse: true
+                  }
+                ],
+                timeoutMs: 30 * 1000  // 30 second timeout
+              });
+
+              try {
+                const response = await app.processes!.waitForHumanAction(
+                  processId,
+                  stepId,
+                  30 * 1000
+                );
+
+                if (response.actionId === "contact") {
+                  console.log(`Squad leader notified: ${response.responseText}`);
+                }
+              } catch (error) {
+                console.log("No response received for straggler alert within timeout");
+              }
+            }
+            
             // Create map UI
             const mapUI = createMapUI(coordinates, stragglers, centroid);
             
