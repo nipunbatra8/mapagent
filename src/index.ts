@@ -43,14 +43,26 @@ function flagSquadStragglers(coords: Coordinate[], thresholdFeet: number): strin
   }, {} as Record<string, Coordinate[]>);
 
   const stragglers: string[] = [];
+  
+  // Debug logging
+  console.log(`Checking stragglers with threshold: ${thresholdFeet} feet`);
+  
   Object.entries(squadGroups).forEach(([squadId, squadCoords]) => {
     const [centLat, centLon] = calculateSquadCentroid(squadCoords);
+    console.log(`Squad ${squadId} centroid: [${centLat}, ${centLon}]`);
+    
     squadCoords.forEach((coord) => {
-      if (haversineDistance(coord.lat, coord.lon, centLat, centLon) > thresholdFeet) {
+      const distFeet = haversineDistance(coord.lat, coord.lon, centLat, centLon);
+      console.log(`Soldier ${coord.soldierId} distance: ${distFeet.toFixed(2)} feet`);
+      
+      if (distFeet > thresholdFeet) {
+        console.log(`Flagging soldier ${coord.soldierId} as straggler`);
         stragglers.push(coord.soldierId);
       }
     });
   });
+
+  console.log(`Found ${stragglers.length} stragglers:`, stragglers);
   return stragglers;
 }
 
@@ -63,27 +75,37 @@ async function readRowFromCSVs(rowIndex: number): Promise<Coordinate[]> {
   for (const file of files) {
     const squadId = file.match(/soldier_(\d+)\.csv/)?.[1] || "unknown";
     const csvPath = path.resolve(dirPath, file);
-    const fileContent = fs.readFileSync(csvPath, "utf8");
-    const records = parse(fileContent, {
-      columns: true,
-      skip_empty_lines: true,
-    });
+    
+    try {
+      const fileContent = fs.readFileSync(csvPath, "utf8");
+      const records = parse(fileContent, {
+        columns: true,
+        skip_empty_lines: true,
+      });
 
-    if (rowIndex < records.length) {
-      const row = records[rowIndex];
-      const lat = parseFloat(row["latitude"]);
-      const lon = parseFloat(row["longitude"]);
-      if (!isNaN(lat) && !isNaN(lon)) {
-        coordinates.push({
-          lat,
-          lon,
-          soldierId: `${squadId}-${coordinates.length + 1}`,
-          squadId,
-        });
-      }
+      // Process all rows to get positions for this squad
+      records.forEach((row: any, idx: number) => {
+        const lat = parseFloat(row["latitude"]);
+        const lon = parseFloat(row["longitude"]);
+        if (!isNaN(lat) && !isNaN(lon)) {
+          coordinates.push({
+            lat,
+            lon,
+            soldierId: `${squadId}-${idx + 1}`,
+            squadId
+          });
+        }
+      });
+    } catch (error) {
+      console.error(`Error reading file ${file}:`, error);
     }
   }
-  return coordinates;
+
+  // Filter coordinates to only include those from the current row index
+  const currentCoords = coordinates.filter((_, index) => Math.floor(index / 5) === rowIndex);
+  console.log(`Row ${rowIndex} coordinates:`, currentCoords);
+  
+  return currentCoords;
 }
 
 // Function to create map UI
@@ -100,13 +122,14 @@ function createMapUI(coords: Coordinate[], stragglers: string[], centroid: [numb
   // Create markers
   const markers = coords.map((c) => {
     const isStraggler = stragglers.includes(c.soldierId);
+    console.log(`Creating marker for soldier ${c.soldierId}, straggler: ${isStraggler}`);
     return {
       latitude: c.lat,
       longitude: c.lon,
       color: squadColors[c.squadId],
       text: isStraggler ? "⚠️" : "🪖",
       title: `Soldier ${c.soldierId}`,
-      description: `Squad ${c.squadId}${isStraggler ? ' (STRAGGLER)' : ''}`,
+      description: `Squad ${c.squadId}${isStraggler ? ' (STRAGGLER - ${distanceToCenter.toFixed(2)} ft from center)' : ''}`,
     };
   });
 
@@ -123,7 +146,7 @@ export const liveMapTool: ToolConfig = {
   name: "Live Squad Map",
   description: "Shows live updates of squad positions from CSV files",
   input: z.object({
-    thresholdFeet: z.number().default(1).describe("Distance threshold in feet for stragglers"),
+    thresholdFeet: z.number().default(45).describe("Distance threshold in feet for stragglers"),
   }),
   output: z.object({
     processId: z.string(),
